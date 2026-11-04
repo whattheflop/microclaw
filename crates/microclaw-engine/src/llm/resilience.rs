@@ -117,19 +117,25 @@ impl CircuitBreaker {
 
 /// Decorator that adds a circuit breaker + model fallback around any
 /// `LlmProvider`. Non-streaming calls fall back to the configured model after a
-/// primary failure (or immediately while the breaker is open); streaming calls
-/// route to the fallback while the breaker is open but do not retry mid-stream
-/// (which would risk duplicating already-emitted output).
+/// primary failure (or immediately while the breaker is open). Streaming calls
+/// may fall back only before emitting text; mid-stream retries would duplicate
+/// already-emitted output.
 pub struct ResilientProvider {
     inner: Box<dyn LlmProvider>,
+    primary_model: String,
     fallback_model: String,
     breaker: CircuitBreaker,
 }
 
 impl ResilientProvider {
-    pub(crate) fn new(inner: Box<dyn LlmProvider>, fallback_model: String) -> Self {
+    pub(crate) fn new(
+        inner: Box<dyn LlmProvider>,
+        primary_model: String,
+        fallback_model: String,
+    ) -> Self {
         Self {
             inner,
+            primary_model,
             fallback_model,
             breaker: CircuitBreaker::new(
                 BREAKER_FAILURE_THRESHOLD,
@@ -147,7 +153,9 @@ impl ResilientProvider {
     ) -> Result<MessagesResponse, MicroClawError> {
         let now = Instant::now();
         // Breaker open and the caller didn't pin a model → fail fast to fallback.
-        if model_override.is_none() && self.breaker.is_open(now) {
+        if (model_override.is_none() || model_override == Some(self.primary_model.as_str()))
+            && self.breaker.is_open(now)
+        {
             warn!(
                 "LLM circuit breaker open; routing to fallback model {}",
                 self.fallback_model
@@ -208,7 +216,9 @@ impl ResilientProvider {
         model_override: Option<&str>,
     ) -> Result<MessagesResponse, MicroClawError> {
         let now = Instant::now();
-        if model_override.is_none() && self.breaker.is_open(now) {
+        if (model_override.is_none() || model_override == Some(self.primary_model.as_str()))
+            && self.breaker.is_open(now)
+        {
             warn!(
                 "LLM circuit breaker open; streaming via fallback model {}",
                 self.fallback_model
@@ -225,20 +235,76 @@ impl ResilientProvider {
                 )
                 .await;
         }
-        match self
-            .inner
-            .send_message_stream_with_model(system, messages, tools, text_tx, model_override)
-            .await
-        {
+        let mut emitted_text = false;
+        let attempt = if let Some(target) = text_tx {
+            let (attempt_tx, mut attempt_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+            let attempt = {
+                let call = self.inner.send_message_stream_with_model(
+                    system,
+                    messages.clone(),
+                    tools.clone(),
+                    Some(&attempt_tx),
+                    model_override,
+                );
+                tokio::pin!(call);
+                loop {
+                    tokio::select! {
+                        result = &mut call => break result,
+                        Some(delta) = attempt_rx.recv() => {
+                            emitted_text |= !delta.is_empty();
+                            let _ = target.send(delta);
+                        }
+                    }
+                }
+            };
+            // A provider may enqueue a delta and fail in the same poll. Drain it
+            // before deciding whether retrying could duplicate visible output.
+            while let Ok(delta) = attempt_rx.try_recv() {
+                emitted_text |= !delta.is_empty();
+                let _ = target.send(delta);
+            }
+            attempt
+        } else {
+            self.inner
+                .send_message_stream_with_model(
+                    system,
+                    messages.clone(),
+                    tools.clone(),
+                    None,
+                    model_override,
+                )
+                .await
+        };
+        match attempt {
             Ok(r) => {
                 self.breaker.record_success();
                 Ok(r)
             }
             Err(e) => {
-                // No mid-stream fallback: deltas may already have been emitted,
-                // so re-streaming would duplicate output. The next call will
-                // route to the fallback once the breaker opens.
                 self.breaker.record_failure(now);
+                if !emitted_text && model_override != Some(self.fallback_model.as_str()) {
+                    warn!(
+                        "primary stream failed before text ({e}); retrying with fallback model {}",
+                        self.fallback_model
+                    );
+                    note_fallback_used();
+                    match self
+                        .inner
+                        .send_message_stream_with_model(
+                            system,
+                            messages,
+                            tools,
+                            text_tx,
+                            Some(&self.fallback_model),
+                        )
+                        .await
+                    {
+                        Ok(response) => return Ok(response),
+                        Err(fallback_error) => {
+                            warn!("fallback stream also failed: {fallback_error}")
+                        }
+                    }
+                }
                 Err(e)
             }
         }
@@ -299,6 +365,217 @@ mod tests {
     use super::*;
     #[allow(unused_imports)]
     use crate::llm::test_prelude::*;
+    use std::sync::Arc;
+
+    #[derive(Clone, Copy)]
+    enum Primary {
+        Success,
+        FailBeforeText,
+        FailAfterText,
+    }
+
+    struct FakeProvider {
+        primary: Primary,
+        fallback_fails: bool,
+        calls: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl FakeProvider {
+        fn reply(
+            &self,
+            model: &str,
+            tx: Option<&UnboundedSender<String>>,
+        ) -> Result<MessagesResponse, MicroClawError> {
+            self.calls.lock().unwrap().push(model.to_string());
+            if model == "primary" && !matches!(self.primary, Primary::Success) {
+                if matches!(self.primary, Primary::FailAfterText) {
+                    if let Some(tx) = tx {
+                        let _ = tx.send("partial".into());
+                    }
+                }
+                return Err(MicroClawError::LlmApi("primary failure".into()));
+            }
+            if model == "fallback" && self.fallback_fails {
+                return Err(MicroClawError::LlmApi("fallback failure".into()));
+            }
+            let text = format!("{model}_ok");
+            if let Some(tx) = tx {
+                let _ = tx.send(text.clone());
+            }
+            Ok(MessagesResponse {
+                content: vec![ResponseContentBlock::Text { text }],
+                stop_reason: Some("end_turn".into()),
+                usage: None,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl LlmProvider for FakeProvider {
+        async fn send_message(
+            &self,
+            _system: &str,
+            _messages: Vec<Message>,
+            _tools: Option<Vec<ToolDefinition>>,
+        ) -> Result<MessagesResponse, MicroClawError> {
+            self.reply("primary", None)
+        }
+
+        async fn send_message_with_model(
+            &self,
+            _system: &str,
+            _messages: Vec<Message>,
+            _tools: Option<Vec<ToolDefinition>>,
+            model: Option<&str>,
+        ) -> Result<MessagesResponse, MicroClawError> {
+            self.reply(model.unwrap_or("primary"), None)
+        }
+
+        async fn send_message_stream_with_model(
+            &self,
+            _system: &str,
+            _messages: Vec<Message>,
+            _tools: Option<Vec<ToolDefinition>>,
+            tx: Option<&UnboundedSender<String>>,
+            model: Option<&str>,
+        ) -> Result<MessagesResponse, MicroClawError> {
+            self.reply(model.unwrap_or("primary"), tx)
+        }
+    }
+
+    fn fixture(
+        primary: Primary,
+        fallback_fails: bool,
+    ) -> (ResilientProvider, Arc<Mutex<Vec<String>>>) {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let inner = Box::new(FakeProvider {
+            primary,
+            fallback_fails,
+            calls: calls.clone(),
+        });
+        (
+            ResilientProvider::new(inner, "primary".into(), "fallback".into()),
+            calls,
+        )
+    }
+
+    fn output(rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>) -> String {
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    #[tokio::test]
+    async fn stream_failure_before_text_falls_back_once() {
+        let (provider, calls) = fixture(Primary::FailBeforeText, false);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        provider
+            .send_message_stream_with_model("", vec![], None, Some(&tx), Some("primary"))
+            .await
+            .unwrap();
+        assert_eq!(*calls.lock().unwrap(), ["primary", "fallback"]);
+        assert_eq!(output(&mut rx), "fallback_ok");
+    }
+
+    #[tokio::test]
+    async fn stream_failure_after_queued_text_never_retries() {
+        let (provider, calls) = fixture(Primary::FailAfterText, false);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        assert!(provider
+            .send_message_stream_with_model("", vec![], None, Some(&tx), Some("primary"))
+            .await
+            .is_err());
+        assert_eq!(*calls.lock().unwrap(), ["primary"]);
+        assert_eq!(output(&mut rx), "partial");
+    }
+
+    #[tokio::test]
+    async fn successful_primary_stream_is_forwarded_once() {
+        let (provider, calls) = fixture(Primary::Success, false);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        provider
+            .send_message_stream_with_model("", vec![], None, Some(&tx), None)
+            .await
+            .unwrap();
+        assert_eq!(*calls.lock().unwrap(), ["primary"]);
+        assert_eq!(output(&mut rx), "primary_ok");
+    }
+
+    #[tokio::test]
+    async fn both_stream_models_fail_without_looping() {
+        let (provider, calls) = fixture(Primary::FailBeforeText, true);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let error = provider
+            .send_message_stream_with_model("", vec![], None, Some(&tx), None)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("primary failure"));
+        assert_eq!(*calls.lock().unwrap(), ["primary", "fallback"]);
+        assert_eq!(output(&mut rx), "");
+    }
+
+    #[tokio::test]
+    async fn explicit_fallback_failure_is_not_retried() {
+        let (provider, calls) = fixture(Primary::FailBeforeText, true);
+        assert!(provider
+            .send_message_stream_with_model("", vec![], None, None, Some("fallback"))
+            .await
+            .is_err());
+        assert_eq!(*calls.lock().unwrap(), ["fallback"]);
+    }
+
+    #[tokio::test]
+    async fn stream_without_text_channel_can_fall_back() {
+        let (provider, calls) = fixture(Primary::FailBeforeText, false);
+        provider
+            .send_message_stream_with_model("", vec![], None, None, Some("primary"))
+            .await
+            .unwrap();
+        assert_eq!(*calls.lock().unwrap(), ["primary", "fallback"]);
+    }
+
+    #[tokio::test]
+    async fn open_breaker_bypasses_explicit_primary_in_both_call_modes() {
+        for streaming in [false, true] {
+            let (provider, calls) = fixture(Primary::FailBeforeText, false);
+            for _ in 0..BREAKER_FAILURE_THRESHOLD {
+                provider.breaker.record_failure(Instant::now());
+            }
+            if streaming {
+                provider
+                    .send_message_stream_with_model("", vec![], None, None, Some("primary"))
+                    .await
+                    .unwrap();
+            } else {
+                provider
+                    .send_message_with_model("", vec![], None, Some("primary"))
+                    .await
+                    .unwrap();
+            }
+            assert_eq!(*calls.lock().unwrap(), ["fallback"]);
+        }
+    }
+
+    #[tokio::test]
+    async fn open_breaker_still_honors_other_model_overrides() {
+        let (provider, calls) = fixture(Primary::FailBeforeText, false);
+        for _ in 0..BREAKER_FAILURE_THRESHOLD {
+            provider.breaker.record_failure(Instant::now());
+        }
+        provider
+            .send_message_stream_with_model("", vec![], None, None, Some("other"))
+            .await
+            .unwrap();
+        assert_eq!(*calls.lock().unwrap(), ["other"]);
+    }
+
+    #[tokio::test]
+    async fn nonstream_failure_still_falls_back() {
+        let (provider, calls) = fixture(Primary::FailBeforeText, false);
+        provider
+            .send_message_with_model("", vec![], None, Some("primary"))
+            .await
+            .unwrap();
+        assert_eq!(*calls.lock().unwrap(), ["primary", "fallback"]);
+    }
 
     #[test]
     pub(crate) fn test_circuit_breaker_opens_and_recovers() {

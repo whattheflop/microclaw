@@ -675,7 +675,7 @@ impl LlmProvider for OpenAiProvider {
         apply_openai_compat_body_overrides(
             &mut body,
             &self.provider,
-            &self.model,
+            &model,
             &self.openai_compat_body_overrides,
             &self.openai_compat_body_overrides_by_provider,
             &self.openai_compat_body_overrides_by_model,
@@ -851,7 +851,7 @@ impl LlmProvider for OpenAiProvider {
         apply_openai_compat_body_overrides(
             &mut body,
             &self.provider,
-            &self.model,
+            &model,
             &self.openai_compat_body_overrides,
             &self.openai_compat_body_overrides_by_provider,
             &self.openai_compat_body_overrides_by_model,
@@ -1055,7 +1055,7 @@ impl OpenAiProvider {
         apply_openai_compat_body_overrides(
             &mut body,
             &self.provider,
-            &self.model,
+            model,
             &self.openai_compat_body_overrides,
             &self.openai_compat_body_overrides_by_provider,
             &self.openai_compat_body_overrides_by_model,

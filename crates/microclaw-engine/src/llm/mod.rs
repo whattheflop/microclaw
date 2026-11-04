@@ -231,9 +231,9 @@ pub fn create_provider(config: &Config) -> Box<dyn LlmProvider> {
     // Wrap with the resilience layer only when a distinct fallback model is
     // configured. Without one, behaviour is identical to the bare provider.
     match config.fallback_model.as_deref().map(str::trim) {
-        Some(fb) if !fb.is_empty() && fb != config.model.trim() => {
-            Box::new(ResilientProvider::new(inner, fb.to_string()))
-        }
+        Some(fb) if !fb.is_empty() && fb != config.model.trim() => Box::new(
+            ResilientProvider::new(inner, config.model.trim().to_string(), fb.to_string()),
+        ),
         _ => inner,
     }
 }

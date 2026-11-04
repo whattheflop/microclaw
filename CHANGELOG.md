@@ -4,6 +4,15 @@ All notable changes to this project should be recorded in this file.
 
 The format is loosely based on Keep a Changelog. Dates use UTC.
 
+## Unreleased (local smolbizbench patch)
+
+### Fixed
+
+- Allow model fallback for streaming calls that fail before emitting any text,
+  including owner calls explicitly selecting the configured primary model.
+  Retain the no-retry boundary after visible text and apply OpenAI request
+  overrides using the actual requested model rather than the primary default.
+
 ## 0.11.1 - 2026-10-25
 
 ### Security
