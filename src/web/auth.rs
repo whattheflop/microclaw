@@ -17,10 +17,11 @@ pub(super) async fn api_auth_status(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let has_password = hash.is_some();
-    let using_default_password = hash
-        .as_deref()
-        .map(|h| verify_password_hash(h, DEFAULT_WEB_PASSWORD))
-        .unwrap_or(false);
+    let using_default_password = !local_access::enabled(&state.app_state.config)
+        && hash
+            .as_deref()
+            .map(|h| verify_password_hash(h, DEFAULT_WEB_PASSWORD))
+            .unwrap_or(false);
     let authenticated = require_scope(&state, &headers, AuthScope::Read)
         .await
         .is_ok();
@@ -28,6 +29,7 @@ pub(super) async fn api_auth_status(
         "ok": true,
         "authenticated": authenticated,
         "has_password": has_password,
+        "password_required": !local_access::enabled(&state.app_state.config),
         "using_default_password": using_default_password
     })))
 }

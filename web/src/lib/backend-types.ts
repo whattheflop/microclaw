@@ -12,6 +12,7 @@ export type AuthStatusResponse = {
   ok?: boolean
   authenticated?: boolean
   has_password?: boolean
+  password_required?: boolean
   using_default_password?: boolean
 }
 

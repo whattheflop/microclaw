@@ -24,6 +24,10 @@ pub(crate) async fn index_or_ws(
 }
 
 pub async fn start_web_server(state: Arc<AppState>) {
+    if let Err(reason) = local_access::prepare(&state).await {
+        error!("Web access configuration rejected: {reason}");
+        return;
+    }
     let limits = WebLimits::from_config(&state.config);
     let flush_interval = metrics_flush_interval(&state.config);
     let mut has_password = call_blocking(state.db.clone(), |db| db.get_auth_password_hash())
@@ -31,7 +35,7 @@ pub async fn start_web_server(state: Arc<AppState>) {
         .ok()
         .flatten()
         .is_some();
-    if !has_password {
+    if !has_password && !local_access::enabled(&state.config) {
         let default_hash = make_password_hash(DEFAULT_WEB_PASSWORD);
         let _ = call_blocking(state.db.clone(), move |db| {
             db.upsert_auth_password_hash(&default_hash)
@@ -43,7 +47,7 @@ pub async fn start_web_server(state: Arc<AppState>) {
         );
         has_password = true;
     }
-    let bootstrap_token = if has_password {
+    let bootstrap_token = if has_password || local_access::enabled(&state.config) {
         None
     } else {
         let token = uuid::Uuid::new_v4().to_string();
@@ -254,7 +258,11 @@ pub(crate) fn build_router(web_state: WebState) -> Router {
         .route("/api/tasks", get(tasks::api_list_tasks))
         .route("/api/tasks/:id/runs", get(tasks::api_task_runs))
         .route("/api/tasks/:id/:action", post(tasks::api_task_action))
-        .with_state(web_state)
+        .with_state(web_state.clone())
+        .layer(axum::middleware::from_fn_with_state(
+            web_state,
+            local_access::guard,
+        ))
 }
 
 #[cfg(test)]

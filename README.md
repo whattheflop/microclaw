@@ -237,3 +237,5 @@ Thanks to everyone who has contributed to MicroClaw.
 ## License
 
 [MIT](LICENSE)
+
+Local smolbizbench fork: [password-free loopback Web UI](docs/operations/web-ui.md#local-fork-password-free-loopback-access) is an explicit opt-in; public binds are refused.

@@ -233,6 +233,15 @@ pub(super) async fn require_scope(
     headers: &HeaderMap,
     required: AuthScope,
 ) -> Result<AuthIdentity, (StatusCode, String)> {
+    if local_access::enabled(&state.app_state.config) {
+        if !local_access::valid_bind(&state.app_state.config) {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "Password-free access requires loopback".into(),
+            ));
+        }
+        return Ok(local_access::identity());
+    }
     let needs_csrf = matches!(
         required,
         AuthScope::Write | AuthScope::Admin | AuthScope::Approvals

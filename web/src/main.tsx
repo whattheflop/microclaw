@@ -150,6 +150,7 @@ function App() {
   const [usageError, setUsageError] = useState<string>('')
   const [usageSession, setUsageSession] = useState<string>('')
   const [authReady, setAuthReady] = useState<boolean>(false)
+  const [authPasswordRequired, setAuthPasswordRequired] = useState<boolean>(true)
   const [authHasPassword, setAuthHasPassword] = useState<boolean>(false)
   const [authAuthenticated, setAuthAuthenticated] = useState<boolean>(false)
   const [authUsingDefaultPassword, setAuthUsingDefaultPassword] = useState<boolean>(false)
@@ -248,7 +249,8 @@ function App() {
       const hasPassword = Boolean(data.has_password)
       const authenticated = Boolean(data.authenticated)
       const usingDefaultPassword = Boolean(data.using_default_password)
-      setAuthHasPassword(hasPassword)
+      setAuthPasswordRequired(data.password_required !== false)
+      setAuthHasPassword(hasPassword || data.password_required === false)
       setAuthAuthenticated(authenticated)
       setAuthUsingDefaultPassword(usingDefaultPassword)
       setAuthReady(true)
@@ -2227,7 +2229,7 @@ function App() {
                       <Tabs.Trigger value="web" className="mc-settings-tab-trigger w-full justify-start rounded-lg px-3 py-2 text-[18px] leading-6 bg-transparent data-[state=active]:bg-emerald-500/20 data-[state=active]:text-emerald-200 hover:bg-white/8">🌐  Web</Tabs.Trigger>
                       <Tabs.Trigger value="access" className="mc-settings-tab-trigger w-full justify-start rounded-lg px-3 py-2 text-[18px] leading-6 bg-transparent data-[state=active]:bg-emerald-500/20 data-[state=active]:text-emerald-200 hover:bg-white/8">🔐  Access</Tabs.Trigger>
                       <Tabs.Trigger value="a2a" className="mc-settings-tab-trigger w-full justify-start rounded-lg px-3 py-2 text-[18px] leading-6 bg-transparent data-[state=active]:bg-emerald-500/20 data-[state=active]:text-emerald-200 hover:bg-white/8">🔗  A2A</Tabs.Trigger>
-                      {authAuthenticated ? (
+                      {authAuthenticated && authPasswordRequired ? (
                         <div className="mt-auto pt-3">
                           <Separator size="4" />
                           <button

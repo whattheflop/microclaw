@@ -8,6 +8,8 @@ The format is loosely based on Keep a Changelog. Dates use UTC.
 
 ### Fixed
 
+- Add opt-in password-free localhost Web UI access with host/origin guards; keep A2A bearer authentication unchanged.
+
 - Allow model fallback for streaming calls that fail before emitting any text,
   including owner calls explicitly selecting the configured primary model.
   Retain the no-retry boundary after visible text and apply OpenAI request

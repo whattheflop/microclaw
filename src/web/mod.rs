@@ -40,6 +40,7 @@ mod auth;
 mod chat_abort;
 mod config;
 mod governance;
+mod local_access;
 mod metrics;
 mod middleware;
 mod pairing;

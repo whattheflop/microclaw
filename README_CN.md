@@ -233,3 +233,5 @@ MicroClaw Work 当前正式支持 Apple Silicon macOS；Linux 和 Windows portab
 ## 许可证
 
 [MIT](LICENSE)
+
+smolbizbench 本地分支支持显式启用[免密码回环 Web UI](docs/operations/web-ui.md#local-fork-password-free-loopback-access)，并拒绝非回环监听。

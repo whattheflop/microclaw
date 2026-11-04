@@ -105,3 +105,30 @@ Playwright report and traces as the `web-e2e-report` artifact.
 - If a container cannot reach a host-side dependency, remember that `127.0.0.1` refers to the container itself.
 
 The broader recovery and backup workflow is in the [operations runbook](runbook.md).
+
+## Local fork: password-free loopback access
+
+The smolbizbench fork adds explicit `channels.web.loopback_no_auth: true`.
+It requires `web_host: 127.0.0.1` and refuses to start the web listener for any
+other bind. The default remains password/API-key authentication.
+
+```yaml
+web_host: 127.0.0.1
+channels:
+  web:
+    enabled: true
+    loopback_no_auth: true
+```
+
+In this mode startup clears the native web password hash and prior browser
+login sessions. It does not alter coding credentials, A2A shared tokens or API
+keys. The web UI opens directly, without password setup/login/logout prompts.
+Requests require the configured loopback host/port; foreign origins and
+cross-site browser requests are rejected. Mutating browser calls require the
+matching HTTP Origin; existing bearer-authenticated local integrations can omit
+Origin and retain their endpoint's own authentication. Do not publish this
+listener through a reverse proxy or tunnel. This mode trusts local access.
+
+Turning the flag off restores the normal password bootstrap path. Back up
+runtime state before changing authentication modes; no owner conversations or
+worker records are deleted.
