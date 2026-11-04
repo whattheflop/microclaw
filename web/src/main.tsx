@@ -120,7 +120,7 @@ function App() {
   const [desktopSidebarOpen, setDesktopSidebarOpen] = useState<boolean>(true)
   const [sessions, setSessions] = useState<SessionItem[]>([])
   const [extraSessions, setExtraSessions] = useState<SessionItem[]>([])
-  const [sessionKey, setSessionKey] = useState<string>(() => makeSessionKey())
+  const [sessionKey, setSessionKey] = useState<string>(() => readSessionFromUrl() || makeSessionKey())
   const [historySeed, setHistorySeed] = useState<ThreadMessageLike[]>([])
   const [historyCountBySession, setHistoryCountBySession] = useState<Record<string, number>>({})
   const [runtimeNonce, setRuntimeNonce] = useState<number>(0)
