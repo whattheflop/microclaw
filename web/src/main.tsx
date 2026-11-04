@@ -1736,7 +1736,7 @@ function App() {
         if (auth.authenticated) {
           await loadAppVersion()
         }
-        if (!auth.has_password || !auth.authenticated) return
+        if ((!auth.has_password && auth.password_required !== false) || !auth.authenticated) return
         await loadInitialConversation()
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))
